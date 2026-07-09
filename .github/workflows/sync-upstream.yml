@@ -1,0 +1,52 @@
+name: Sync Upstream Immich Compose
+
+on:
+  schedule:
+    # Runs at 00:00 every Sunday (weekly)
+    - cron: '0 0 * * 0'
+  workflow_dispatch: # Allows manual run from GitHub Actions UI
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: Fetch and Check Upstream Release
+        run: |
+          # 1. Fetch the latest release tag name from official Immich repository
+          LATEST_TAG=$(curl -s https://api.github.com/repos/immich-app/immich/releases/latest | jq -r .tag_name)
+          echo "Latest upstream Immich release tag is $LATEST_TAG"
+
+          # 2. Download the docker-compose files associated with the latest tag
+          curl -sL "https://github.com/immich-app/immich/releases/download/$LATEST_TAG/docker-compose.yml" -o docker-compose.yml.new
+          curl -sL "https://github.com/immich-app/immich/releases/download/$LATEST_TAG/docker-compose.rootless.yml" -o docker-compose.rootless.yml.new
+
+          # 3. Check if download succeeded and is valid yaml before replacing local files
+          if grep -q "services" docker-compose.yml.new; then
+            if ! cmp -s docker-compose.yml docker-compose.yml.new; then
+              mv docker-compose.yml.new docker-compose.yml
+              mv docker-compose.rootless.yml.new docker-compose.rootless.yml
+              echo "UPDATED=true" >> $GITHUB_ENV
+              echo "New version detected and local files updated."
+            else
+              echo "UPDATED=false" >> $GITHUB_ENV
+              echo "Local files are already up-to-date with upstream release."
+              rm *.new
+            fi
+          else
+            echo "UPDATED=false" >> $GITHUB_ENV
+            echo "Error: Downloaded file is invalid or download failed."
+            rm *.new
+            exit 1
+          fi
+
+      - name: Commit and Push Changes
+        if: env.UPDATED == 'true'
+        run: |
+          git config --global user.name "github-actions[bot]"
+          git config --global user.email "github-actions[bot]@users.noreply.github.com"
+          git add docker-compose.yml docker-compose.rootless.yml
+          git commit -m "Auto-update Immich compose files to upstream release"
+          git push origin main
