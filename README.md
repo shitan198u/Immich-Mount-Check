@@ -2,6 +2,8 @@
 
 A fail-safe Docker Compose utility to prevent containers from starting if an external hard drive (e.g., a media library disk) is not mounted on the host machine. 
 
+![Mount Check Logs](mount_log.png)
+
 This tool is designed to work seamlessly with GitOps workflows, Docker managers (like Portainer or Arcane), or standard Docker Compose deployments. It uses a **Docker Compose override file** so you can safely auto-update your main Immich configuration without losing your mount-checking logic.
 
 ---
