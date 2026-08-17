@@ -20,22 +20,35 @@ if [[ ! -f "${ENV_FILE}" ]]; then
     exit 1
 fi
 
-# Load variables from .env ignoring comments and empty lines
-set -a
-# shellcheck disable=SC1090
-source <(grep -v '^\s*#' "${ENV_FILE}" | grep -E '^\s*[A-Za-z_][A-Za-z0-9_]*=')
-set +a
+# Helper to safely extract variables from .env without eval/source hazards
+get_env_var() {
+    local key="$1"
+    local default_val="${2:-}"
+    local val
+    val=$(sed -n "s/^[[:space:]]*${key}[[:space:]]*=[[:space:]]*//p" "${ENV_FILE}" | tail -n1 | sed -e 's/\r$//' -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//' || true)
+    val="${val%\"}"
+    val="${val#\"}"
+    val="${val%\'}"
+    val="${val#\'}"
+    if [[ -z "${val}" ]]; then
+        printf '%s' "${default_val}"
+    else
+        printf '%s' "${val}"
+    fi
+}
 
 # Construct Mount Point and Defaults
-EXTERNAL_MOUNT_PARENT="${EXTERNAL_MOUNT_PARENT:-/mnt}"
-EXTERNAL_MOUNT_NAME="${EXTERNAL_MOUNT_NAME:-my-external-drive}"
+EXTERNAL_MOUNT_PARENT="$(get_env_var EXTERNAL_MOUNT_PARENT "/mnt")"
+EXTERNAL_MOUNT_NAME="$(get_env_var EXTERNAL_MOUNT_NAME "my-external-drive")"
 MOUNT_PATH="${EXTERNAL_MOUNT_PARENT%/}/${EXTERNAL_MOUNT_NAME#/}"
 
-UPLOAD_LOCATION="${UPLOAD_LOCATION:-${MOUNT_PATH}/immich/uploads}"
-DB_DATA_LOCATION="${DB_DATA_LOCATION:-${HOME}/immich/db}"
-MARKER_FILENAME="${MARKER_FILENAME:-.mount_verified}"
-MIN_FREE_MOUNT_MB="${MIN_FREE_MOUNT_MB:-1024}"   # 1 GB minimum
-MIN_FREE_DB_MB="${MIN_FREE_DB_MB:-512}"          # 512 MB minimum
+UPLOAD_LOCATION="$(get_env_var UPLOAD_LOCATION "${MOUNT_PATH}/immich/uploads")"
+DB_DATA_LOCATION="$(get_env_var DB_DATA_LOCATION "${HOME}/immich/db")"
+MARKER_FILENAME="$(get_env_var MARKER_FILENAME ".mount_verified")"
+EXPECTED_FS_UUID="$(get_env_var EXPECTED_FS_UUID "")"
+MIN_FREE_MOUNT_MB="$(get_env_var MIN_FREE_MOUNT_MB "1024")"   # 1 GB minimum
+MIN_FREE_DB_MB="$(get_env_var MIN_FREE_DB_MB "512")"          # 512 MB minimum
+NOTIFICATION_TIMEOUT_MS="$(get_env_var NOTIFICATION_TIMEOUT_MS "-1")"
 
 # Helper to dispatch native desktop notifications via D-Bus (follows KDE default settings)
 send_desktop_notification() {
@@ -44,6 +57,10 @@ send_desktop_notification() {
     local icon="${3:-folder-pictures}"
     local urgency="${4:-1}" # 1 = normal, 2 = critical
     local timeout_ms="${5:-${NOTIFICATION_TIMEOUT_MS:--1}}" # -1 = follow KDE system settings
+
+    if [[ ! "${urgency}" =~ ^[012]$ ]]; then
+        urgency=1
+    fi
 
     local target_uid="${UID:-1000}"
     if [[ "${target_uid}" -eq 0 ]]; then
@@ -77,7 +94,7 @@ fail_precheck() {
     local err_msg="$1"
     echo "[ERROR] ${err_msg}" >&2
     echo "[FATAL] Aborting start to protect data and storage." >&2
-    send_desktop_notification "Immich Mount Check" "❌ ${err_msg}" "dialog-error" 8000
+    send_desktop_notification "Immich Mount Check" "❌ ${err_msg}" "dialog-error" 2 "${NOTIFICATION_TIMEOUT_MS:--1}"
     exit 1
 }
 
@@ -110,6 +127,15 @@ if [[ ! -f "${MARKER_PATH}" ]]; then
     fail_precheck "Marker file missing (${MARKER_FILENAME}) on ${MOUNT_PATH}. Wrong drive attached."
 fi
 echo "✔ Identity marker file verified (${MARKER_FILENAME})."
+
+# Optional Filesystem UUID Check
+if [[ -n "${EXPECTED_FS_UUID}" ]]; then
+    ACTUAL_UUID=$(findmnt -n -o UUID "${MOUNT_PATH}" 2>/dev/null || true)
+    if [[ "${ACTUAL_UUID}" != "${EXPECTED_FS_UUID}" ]]; then
+        fail_precheck "Filesystem UUID mismatch (expected '${EXPECTED_FS_UUID}', got '${ACTUAL_UUID}'). Wrong drive attached."
+    fi
+    echo "✔ Filesystem UUID matched (${EXPECTED_FS_UUID})."
+fi
 
 # ------------------------------------------------------------------------------
 # 5. Read-Write Capability Probe (Catches dirty/RO remounts)
@@ -168,5 +194,5 @@ fi
 echo "✔ Disk space adequate (${AVAIL_MOUNT_MB}MB free on external drive, ${AVAIL_DB_MB}MB free on DB volume)."
 
 echo "=== [Immich Pre-Check] All safety checks passed successfully ==="
-send_desktop_notification "Immich Auto-Mount" "✔ Mount verified: All safety checks passed. Immich is starting..." "folder-pictures" 5
+send_desktop_notification "Immich Auto-Mount" "✔ Mount verified: All safety checks passed. Immich is starting..." "folder-pictures" 1 "${NOTIFICATION_TIMEOUT_MS:--1}"
 exit 0

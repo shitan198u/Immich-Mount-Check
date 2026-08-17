@@ -2,23 +2,18 @@ services:
   wait-for-mount:
     image: alpine:latest
     container_name: wait-for-mount
-    stop_grace_period: 1s
-    # Checks if the subdirectory (e.g. BOREWELL-5TB) is a mountpoint.
-    # If the drive isn't mounted, /host_mnt/BOREWELL-5TB is just a standard folder
-    # (even if it contains lingering files), so 'mountpoint' returns false.
+    restart: "no"
+    # Checks if the subdirectory is a mountpoint.
+    # If the drive isn't mounted, /host_mnt/drive is just a standard folder
+    # so 'mountpoint' returns false.
     command: >
       sh -c "
       echo 'Waiting for host mount at /host_mnt/${EXTERNAL_MOUNT_NAME} to be active...' &&
-      while true; do
-        if mountpoint -q /host_mnt/${EXTERNAL_MOUNT_NAME}; then
-          echo 'Mount detected!' &&
-          touch /tmp/.mount_ready &&
-          break;
-        fi;
+      while ! mountpoint -q \"/host_mnt/${EXTERNAL_MOUNT_NAME}\"; do
         echo 'Still waiting for mount...' &&
         sleep 5;
       done &&
-      exec tail -f /dev/null
+      echo 'Mount detected at /host_mnt/${EXTERNAL_MOUNT_NAME}!'
       "
     volumes:
       # Bind-mount ONLY the parent directory of your external drives (e.g. /media/username)
@@ -30,18 +25,11 @@ services:
         bind:
           create_host_path: false
           propagation: rslave
-    healthcheck:
-      test: ["CMD", "test", "-f", "/tmp/.mount_ready"]
-      interval: 5s
-      timeout: 2s
-      retries: 1
-      start_period: 2s
-    restart: unless-stopped
 
   immich-server:
     depends_on:
       wait-for-mount:
-        condition: service_healthy
+        condition: service_completed_successfully
     volumes:
       # Override the upload volume mount with fail-fast creation and slave propagation.
       - type: bind
@@ -54,7 +42,7 @@ services:
   database:
     depends_on:
       wait-for-mount:
-        condition: service_healthy
+        condition: service_completed_successfully
     volumes:
       # Override the database volume mount with fail-fast creation and slave propagation.
       - type: bind
@@ -67,9 +55,9 @@ services:
   immich-machine-learning:
     depends_on:
       wait-for-mount:
-        condition: service_healthy
+        condition: service_completed_successfully
 
   redis:
     depends_on:
       wait-for-mount:
-        condition: service_healthy
+        condition: service_completed_successfully

@@ -14,7 +14,7 @@ Exec=@SCRIPT_DIR@/immich-eject.sh --gui
 [Desktop Action immichRestart]
 Name=Restart Immich Stack
 Icon=view-refresh
-Exec=bash -c "@SCRIPT_DIR@/immich-stop.sh && @SCRIPT_DIR@/immich-precheck.sh && cd @WORKING_DIR@ && docker compose up -d && kdialog --passivepopup 'Immich stack restarted' 5 --title 'Immich' --icon folder-pictures"
+Exec=@SCRIPT_DIR@/immich-restart.sh
 
 [Desktop Action immichStatus]
 Name=Check Immich Status

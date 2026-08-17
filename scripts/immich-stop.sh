@@ -14,22 +14,35 @@ COMPOSE_FILE="${BASE_DIR}/docker-compose.yml"
 OVERRIDE_FILE="${BASE_DIR}/docker-compose.override.yml"
 ENV_FILE="${ENV_FILE:-${BASE_DIR}/.env}"
 
-echo "=== [Immich Stop] Initiating graceful container shutdown ==="
+IS_POST_CLEANUP=false
+if [[ "${1:-}" == "--post" ]]; then
+    IS_POST_CLEANUP=true
+fi
+
+echo "=== [Immich Stop] Initiating container shutdown (post_cleanup=${IS_POST_CLEANUP}) ==="
 
 cd "${BASE_DIR}"
 
-# 1. Attempt graceful Docker Compose shutdown with 15-second timeout
-if docker compose down -t 15 --remove-orphans 2>/dev/null; then
-    echo "✔ Docker Compose stack stopped gracefully."
+# 1. Attempt graceful Docker Compose shutdown (or forced cleanup if in --post mode)
+if [[ "${IS_POST_CLEANUP}" == false ]]; then
+    if docker compose down -t 25 --remove-orphans 2>/dev/null; then
+        echo "✔ Docker Compose stack stopped gracefully."
+    else
+        echo "[WARN] Standard docker compose down failed or timed out (possible drive disconnect)."
+        echo "[INFO] Performing defensive cleanup for any lingering stack containers..."
+        CONTAINERS=$(docker ps -a -q --filter "name=immich_" --filter "name=wait-for-mount" 2>/dev/null || true)
+        if [[ -n "${CONTAINERS}" ]]; then
+            echo "[INFO] Forcing cleanup of containers: ${CONTAINERS}"
+            docker stop -t 5 ${CONTAINERS} 2>/dev/null || true
+            docker rm -f ${CONTAINERS} 2>/dev/null || true
+        fi
+    fi
 else
-    echo "[WARN] Standard docker compose down failed or timed out (possible drive disconnect)."
-    echo "[INFO] Performing defensive cleanup for any lingering stack containers..."
-
-    # Check for remaining stack containers
+    # Quick sweep for any partially created or dangling containers
     CONTAINERS=$(docker ps -a -q --filter "name=immich_" --filter "name=wait-for-mount" 2>/dev/null || true)
     if [[ -n "${CONTAINERS}" ]]; then
-        echo "[INFO] Forcing cleanup of containers: ${CONTAINERS}"
-        docker stop -t 5 ${CONTAINERS} 2>/dev/null || true
+        echo "[INFO] ExecStopPost: Cleaning up dangling containers: ${CONTAINERS}"
+        docker stop -t 3 ${CONTAINERS} 2>/dev/null || true
         docker rm -f ${CONTAINERS} 2>/dev/null || true
     fi
 fi
@@ -41,6 +54,10 @@ send_desktop_notification() {
     local icon="${3:-media-playback-stop}"
     local urgency="${4:-1}" # 1 = normal, 2 = critical
     local timeout_ms="${5:-${NOTIFICATION_TIMEOUT_MS:--1}}" # -1 = follow KDE system settings
+
+    if [[ ! "${urgency}" =~ ^[012]$ ]]; then
+        urgency=1
+    fi
 
     local target_uid="${UID:-1000}"
     if [[ "${target_uid}" -eq 0 ]]; then
@@ -75,5 +92,7 @@ echo "[INFO] Flushing filesystem buffers..."
 sync || true
 
 echo "=== [Immich Stop] Shutdown completed successfully ==="
-send_desktop_notification "Immich Auto-Mount" "⏹ Immich stack stopped safely." "media-playback-stop" 4
+if [[ "${IS_POST_CLEANUP}" == false ]]; then
+    send_desktop_notification "Immich Auto-Mount" "⏹ Immich stack stopped safely." "media-playback-stop" 1 "${NOTIFICATION_TIMEOUT_MS:--1}"
+fi
 exit 0

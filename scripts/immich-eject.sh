@@ -56,13 +56,25 @@ if [[ ! -f "${ENV_FILE}" ]]; then
     exit 1
 fi
 
-set -a
-# shellcheck disable=SC1090
-source <(grep -v '^\s*#' "${ENV_FILE}" | grep -E '^\s*[A-Za-z_][A-Za-z0-9_]*=')
-set +a
+# Helper to safely extract variables from .env without eval/source hazards
+get_env_var() {
+    local key="$1"
+    local default_val="${2:-}"
+    local val
+    val=$(sed -n "s/^[[:space:]]*${key}[[:space:]]*=[[:space:]]*//p" "${ENV_FILE}" | tail -n1 | sed -e 's/\r$//' -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//' || true)
+    val="${val%\"}"
+    val="${val#\"}"
+    val="${val%\'}"
+    val="${val#\'}"
+    if [[ -z "${val}" ]]; then
+        printf '%s' "${default_val}"
+    else
+        printf '%s' "${val}"
+    fi
+}
 
-EXTERNAL_MOUNT_PARENT="${EXTERNAL_MOUNT_PARENT:-/mnt}"
-EXTERNAL_MOUNT_NAME="${EXTERNAL_MOUNT_NAME:-my-external-drive}"
+EXTERNAL_MOUNT_PARENT="$(get_env_var EXTERNAL_MOUNT_PARENT "/mnt")"
+EXTERNAL_MOUNT_NAME="$(get_env_var EXTERNAL_MOUNT_NAME "my-external-drive")"
 MOUNT_PATH="${EXTERNAL_MOUNT_PARENT%/}/${EXTERNAL_MOUNT_NAME#/}"
 
 # 2. Confirmation Dialog (if in GUI mode)
@@ -82,7 +94,6 @@ notify_info "Stopping Immich containers and syncing filesystem..."
 if systemctl is-active --quiet immich.service 2>/dev/null; then
     echo "[INFO] Stopping immich.service via systemctl..."
     if ! systemctl stop immich.service 2>/dev/null; then
-        # If user cannot stop system unit directly, invoke stop script
         "${SCRIPT_DIR}/immich-stop.sh"
     fi
 else
@@ -94,15 +105,12 @@ echo "[INFO] Syncing data buffers..."
 sync
 
 # 5. Unmount the external filesystem and lock encrypted container
+LOCKED=false
+POWERED_OFF=false
+
 if mountpoint -q "${MOUNT_PATH}"; then
     echo "[INFO] Detecting device topology for ${MOUNT_PATH}..."
     DEV_SOURCE=$(findmnt -n -o SOURCE "${MOUNT_PATH}" 2>/dev/null || true)
-    PARENT_PART=""
-    PARENT_DISK=""
-    if [[ -n "${DEV_SOURCE}" ]]; then
-        PARENT_PART=$(lsblk -s -no NAME "${DEV_SOURCE}" 2>/dev/null | sed 's/[^a-zA-Z0-9_]//g' | sed -n '2p' || true)
-        PARENT_DISK=$(lsblk -s -no NAME "${DEV_SOURCE}" 2>/dev/null | sed 's/[^a-zA-Z0-9_]//g' | sed -n '3p' || true)
-    fi
 
     echo "[INFO] Unmounting ${MOUNT_PATH}..."
     UNMOUNTED=false
@@ -128,23 +136,38 @@ if mountpoint -q "${MOUNT_PATH}"; then
         exit 1
     fi
 
-    # Lock LUKS container if encrypted
-    if [[ -n "${PARENT_PART}" && -b "/dev/${PARENT_PART}" ]]; then
-        echo "[INFO] Locking encrypted device /dev/${PARENT_PART}..."
-        if command -v udisksctl >/dev/null 2>&1; then
-            udisksctl lock -b "/dev/${PARENT_PART}" --no-user-interaction 2>/dev/null || true
+    # Lock LUKS container if encrypted mapper device
+    if [[ -n "${DEV_SOURCE}" ]]; then
+        if [[ "${DEV_SOURCE}" == /dev/mapper/* || "${DEV_SOURCE}" == /dev/dm-* ]]; then
+            echo "[INFO] Locking encrypted device ${DEV_SOURCE}..."
+            if command -v udisksctl >/dev/null 2>&1; then
+                if udisksctl lock -b "${DEV_SOURCE}" --no-user-interaction 2>/dev/null; then
+                    LOCKED=true
+                fi
+            fi
         fi
-    fi
 
-    # Power off physical drive if requested / possible
-    if [[ -n "${PARENT_DISK}" && -b "/dev/${PARENT_DISK}" ]]; then
-        echo "[INFO] Powering off /dev/${PARENT_DISK}..."
-        if command -v udisksctl >/dev/null 2>&1; then
-            udisksctl power-off -b "/dev/${PARENT_DISK}" --no-user-interaction 2>/dev/null || true
+        # Find top-level physical parent disk
+        TOP_NAME=$(lsblk -s -no NAME "${DEV_SOURCE}" 2>/dev/null | tail -n1 | tr -d '[:space:]|`-' || true)
+        if [[ -n "${TOP_NAME}" && -b "/dev/${TOP_NAME}" ]]; then
+            echo "[INFO] Powering off physical drive /dev/${TOP_NAME}..."
+            if command -v udisksctl >/dev/null 2>&1; then
+                if udisksctl power-off -b "/dev/${TOP_NAME}" --no-user-interaction 2>/dev/null; then
+                    POWERED_OFF=true
+                fi
+            fi
         fi
     fi
 fi
 
-# 6. Success notification
-notify_success "✔ Immich was stopped gracefully.\n✔ Filesystem buffers flushed.\n✔ Drive unmounted and locked.\n\nIt is now safe to unplug the drive."
+# 6. Truthful success notification
+if [[ "${LOCKED}" == true && "${POWERED_OFF}" == true ]]; then
+    notify_success "✔ Immich stack stopped gracefully.\n✔ Filesystem buffers flushed.\n✔ Drive unmounted, locked, and powered off.\n\nIt is now safe to disconnect the drive."
+elif [[ "${LOCKED}" == true ]]; then
+    notify_success "✔ Immich stack stopped gracefully.\n✔ Filesystem buffers flushed.\n✔ Drive unmounted and encrypted container locked.\n\nIt is now safe to disconnect the drive."
+elif [[ "${POWERED_OFF}" == true ]]; then
+    notify_success "✔ Immich stack stopped gracefully.\n✔ Filesystem buffers flushed.\n✔ Drive unmounted and powered off.\n\nIt is now safe to disconnect the drive."
+else
+    notify_success "✔ Immich stack stopped gracefully.\n✔ Filesystem buffers flushed.\n✔ Drive (${MOUNT_PATH}) unmounted.\n\nIt is now safe to disconnect the drive."
+fi
 exit 0

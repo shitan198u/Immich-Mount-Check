@@ -30,8 +30,21 @@ KDE_KIO_DIR="${USER_HOME}/.local/share/kio/servicemenus"
 KDE_SOLID_DIR="${USER_HOME}/.local/share/solid/actions"
 
 # ------------------------------------------------------------------------------
-# 1. Check Configuration
+# 1. Dependency Checks & Configuration
 # ------------------------------------------------------------------------------
+REQUIRED_COMMANDS=(docker systemctl systemd-escape mountpoint findmnt lsblk)
+for cmd in "${REQUIRED_COMMANDS[@]}"; do
+    if ! command -v "${cmd}" >/dev/null 2>&1; then
+        echo "[ERROR] Required dependency '${cmd}' is missing. Please install it first." >&2
+        exit 1
+    fi
+done
+
+if ! docker compose version >/dev/null 2>&1; then
+    echo "[ERROR] 'docker compose' (v2 plugin) is required but not found." >&2
+    exit 1
+fi
+
 if [[ ! -f "${ENV_FILE}" ]]; then
     echo "[ERROR] .env file not found at: ${ENV_FILE}"
     echo "Please copy .env.example to .env and configure your paths first:"
@@ -39,16 +52,37 @@ if [[ ! -f "${ENV_FILE}" ]]; then
     exit 1
 fi
 
-set -a
-# shellcheck disable=SC1090
-source <(grep -v '^\s*#' "${ENV_FILE}" | grep -E '^\s*[A-Za-z_][A-Za-z0-9_]*=')
-set +a
+# Helper to safely extract variables from .env without eval/source hazards
+get_env_var() {
+    local key="$1"
+    local default_val="${2:-}"
+    local val
+    val=$(sed -n "s/^[[:space:]]*${key}[[:space:]]*=[[:space:]]*//p" "${ENV_FILE}" | tail -n1 | sed -e 's/\r$//' -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//' || true)
+    val="${val%\"}"
+    val="${val#\"}"
+    val="${val%\'}"
+    val="${val#\'}"
+    if [[ -z "${val}" ]]; then
+        printf '%s' "${default_val}"
+    else
+        printf '%s' "${val}"
+    fi
+}
 
-EXTERNAL_MOUNT_PARENT="${EXTERNAL_MOUNT_PARENT:-/mnt}"
-EXTERNAL_MOUNT_NAME="${EXTERNAL_MOUNT_NAME:-my-external-drive}"
+EXTERNAL_MOUNT_PARENT="$(get_env_var EXTERNAL_MOUNT_PARENT "/mnt")"
+EXTERNAL_MOUNT_NAME="$(get_env_var EXTERNAL_MOUNT_NAME "my-external-drive")"
 MOUNT_PATH="${EXTERNAL_MOUNT_PARENT%/}/${EXTERNAL_MOUNT_NAME#/}"
 MOUNT_UNIT="$(systemd-escape -p "${MOUNT_PATH}").mount"
-MARKER_FILENAME="${MARKER_FILENAME:-.mount_verified}"
+MARKER_FILENAME="$(get_env_var MARKER_FILENAME ".mount_verified")"
+DOCKER_CMD="$(command -v docker || echo /usr/bin/docker)"
+
+# Check Docker Group
+if getent group docker >/dev/null 2>&1; then
+    if ! id -nG "${ACTUAL_USER}" | grep -qw "docker"; then
+        echo "[WARN] User '${ACTUAL_USER}' is not in the 'docker' group."
+        echo "       You may need to run: sudo usermod -aG docker ${ACTUAL_USER}"
+    fi
+fi
 
 # ------------------------------------------------------------------------------
 # Action: Check Only
@@ -124,6 +158,8 @@ sed \
     -e "s|@SCRIPT_DIR@|${SCRIPT_DIR}|g" \
     -e "s|@USER@|${ACTUAL_USER}|g" \
     -e "s|@MOUNT_UNIT@|${MOUNT_UNIT}|g" \
+    -e "s|@MOUNT_PATH@|${MOUNT_PATH}|g" \
+    -e "s|@DOCKER_CMD@|${DOCKER_CMD}|g" \
     "${SYSTEMD_DIR}/immich.service.template" > "${TMP_SERVICE}"
 
 echo "[INFO] Installing to ${SYSTEMD_SERVICE_DEST} (requires sudo)..."
@@ -156,6 +192,15 @@ sed \
     -e "s|@SCRIPT_DIR@|${SCRIPT_DIR}|g" \
     "${DESKTOP_DIR}/immich-solid-actions.desktop.template" > "${KDE_SOLID_DIR}/immich-solid-actions.desktop"
 
+# Fix ownership if run with sudo
+if [[ "${EUID}" -eq 0 && -n "${SUDO_USER:-}" ]]; then
+    USER_GROUP="$(id -gn "${ACTUAL_USER}")"
+    chown -R "${ACTUAL_USER}:${USER_GROUP}" \
+        "${KDE_APPS_DIR}/immich-eject.desktop" \
+        "${KDE_KIO_DIR}/immich-dolphin-actions.desktop" \
+        "${KDE_SOLID_DIR}/immich-solid-actions.desktop" 2>/dev/null || true
+fi
+
 if command -v update-desktop-database >/dev/null 2>&1; then
     update-desktop-database "${KDE_APPS_DIR}" 2>/dev/null || true
 fi
@@ -164,19 +209,28 @@ echo ""
 echo "=== [Setup Completed Successfully] ==="
 echo "1. Systemd Service : ${SYSTEMD_SERVICE_DEST}"
 echo "   - Bound to      : ${MOUNT_UNIT}"
+echo "   - Mount Path    : ${MOUNT_PATH}"
 echo "   - Auto-starts on: Mount activation"
 echo "   - Auto-stops on : Unmount or hot-unplug"
 echo "2. KDE Integration :"
 echo "   - Launcher App  : 'Safely Eject Immich Drive' in KRunner / App Menu"
 echo "   - Dolphin Menu  : Right-click any directory/drive in Dolphin -> 'Immich Drive Actions'"
+echo "   - Tray Action   : Solid device action in Disks & Devices popup"
 echo "3. CLI Commands    :"
 echo "   - Safe Eject    : ${SCRIPT_DIR}/immich-eject.sh [--gui]"
+echo "   - Restart Stack : ${SCRIPT_DIR}/immich-restart.sh"
 echo "   - Pre-Check     : ${SCRIPT_DIR}/immich-precheck.sh"
 echo "   - Stop Stack    : ${SCRIPT_DIR}/immich-stop.sh"
 echo ""
 
-# Run Pre-flight verification
+# Run Pre-flight verification as actual user
 echo "=== [Running Immediate Pre-Flight Check] ==="
-"${SCRIPT_DIR}/immich-precheck.sh" || {
-    echo "[WARN] Pre-flight check finished with warnings. Review above output."
-}
+if [[ "${EUID}" -eq 0 && -n "${SUDO_USER:-}" ]]; then
+    sudo -u "${ACTUAL_USER}" "${SCRIPT_DIR}/immich-precheck.sh" || {
+        echo "[WARN] Pre-flight check finished with warnings. Review above output."
+    }
+else
+    "${SCRIPT_DIR}/immich-precheck.sh" || {
+        echo "[WARN] Pre-flight check finished with warnings. Review above output."
+    }
+fi
