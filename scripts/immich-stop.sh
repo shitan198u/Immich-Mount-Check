@@ -34,13 +34,13 @@ else
     fi
 fi
 
-# Helper to dispatch native desktop notifications via D-Bus with countdown timer
+# Helper to dispatch native desktop notifications via D-Bus (follows KDE default settings)
 send_desktop_notification() {
     local title="$1"
     local message="$2"
     local icon="${3:-media-playback-stop}"
     local urgency="${4:-1}" # 1 = normal, 2 = critical
-    local timeout_ms="${5:-6000}" # 6 seconds countdown timer
+    local timeout_ms="${5:-${NOTIFICATION_TIMEOUT_MS:--1}}" # -1 = follow KDE system settings
 
     local target_uid="${UID:-1000}"
     if [[ "${target_uid}" -eq 0 ]]; then
@@ -60,7 +60,10 @@ send_desktop_notification() {
                 --method org.freedesktop.Notifications.Notify \
                 -- "Immich" 0 "${icon}" "${title}" "${message}" [] "{\"urgency\": <byte ${urgency}>}" "${timeout_ms}" >/dev/null 2>&1 || true
         elif command -v kdialog >/dev/null 2>&1; then
-            local timeout_sec=$((timeout_ms / 1000))
+            local timeout_sec=0
+            if [[ "${timeout_ms}" -gt 0 ]]; then
+                timeout_sec=$((timeout_ms / 1000))
+            fi
             XDG_RUNTIME_DIR="/run/user/${target_uid}" DBUS_SESSION_BUS_ADDRESS="unix:path=${user_bus}" \
                 kdialog --passivepopup "${message}" "${timeout_sec}" --title "${title}" --icon "${icon}" >/dev/null 2>&1 || true
         fi
