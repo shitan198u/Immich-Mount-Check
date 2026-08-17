@@ -21,7 +21,7 @@ services:
       exec tail -f /dev/null
       "
     volumes:
-      # Bind-mount ONLY the parent directory of your external drives (e.g. /media/shsrra)
+      # Bind-mount ONLY the parent directory of your external drives (e.g. /media/username)
       # set propagation to 'rslave' so mount events propagate from host to container.
       - type: bind
         source: ${EXTERNAL_MOUNT_PARENT}
