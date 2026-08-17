@@ -32,7 +32,7 @@ jobs:
 
           # 3. Check if download succeeded and is valid yaml before replacing local files
           if grep -q "services" docker-compose.yml.new && grep -q "services" docker-compose.rootless.yml.new; then
-            if ! cmp -s docker-compose.yml docker-compose.yml.new; then
+            if ! cmp -s docker-compose.yml docker-compose.yml.new || ! cmp -s docker-compose.rootless.yml docker-compose.rootless.yml.new; then
               mv docker-compose.yml.new docker-compose.yml
               mv docker-compose.rootless.yml.new docker-compose.rootless.yml
               echo "UPDATED=true" >> $GITHUB_ENV

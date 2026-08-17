@@ -14,6 +14,27 @@ COMPOSE_FILE="${BASE_DIR}/docker-compose.yml"
 OVERRIDE_FILE="${BASE_DIR}/docker-compose.override.yml"
 ENV_FILE="${ENV_FILE:-${BASE_DIR}/.env}"
 
+# Helper to safely extract variables from .env without eval/source hazards
+get_env_var() {
+    local key="$1"
+    local default_val="${2:-}"
+    local val=""
+    if [[ -f "${ENV_FILE}" ]]; then
+        val=$(sed -n "s/^[[:space:]]*${key}[[:space:]]*=[[:space:]]*//p" "${ENV_FILE}" | tail -n1 | sed -e 's/\r$//' -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//' || true)
+        val="${val%\"}"
+        val="${val#\"}"
+        val="${val%\'}"
+        val="${val#\'}"
+    fi
+    if [[ -z "${val}" ]]; then
+        printf '%s' "${default_val}"
+    else
+        printf '%s' "${val}"
+    fi
+}
+
+NOTIFICATION_TIMEOUT_MS="${NOTIFICATION_TIMEOUT_MS:-$(get_env_var NOTIFICATION_TIMEOUT_MS "-1")}"
+
 IS_POST_CLEANUP=false
 if [[ "${1:-}" == "--post" ]]; then
     IS_POST_CLEANUP=true
@@ -30,18 +51,18 @@ if [[ "${IS_POST_CLEANUP}" == false ]]; then
     else
         echo "[WARN] Standard docker compose down failed or timed out (possible drive disconnect)."
         echo "[INFO] Performing defensive cleanup for any lingering stack containers..."
-        CONTAINERS=$(docker ps -a -q --filter "name=immich_" --filter "name=wait-for-mount" 2>/dev/null || true)
+        CONTAINERS=$(docker compose ps -aq --all 2>/dev/null || true)
         if [[ -n "${CONTAINERS}" ]]; then
-            echo "[INFO] Forcing cleanup of containers: ${CONTAINERS}"
+            echo "[INFO] Forcing cleanup of project containers: ${CONTAINERS}"
             docker stop -t 5 ${CONTAINERS} 2>/dev/null || true
             docker rm -f ${CONTAINERS} 2>/dev/null || true
         fi
     fi
 else
-    # Quick sweep for any partially created or dangling containers
-    CONTAINERS=$(docker ps -a -q --filter "name=immich_" --filter "name=wait-for-mount" 2>/dev/null || true)
+    # Quick sweep for any partially created or dangling containers in this compose project
+    CONTAINERS=$(docker compose ps -aq --all 2>/dev/null || true)
     if [[ -n "${CONTAINERS}" ]]; then
-        echo "[INFO] ExecStopPost: Cleaning up dangling containers: ${CONTAINERS}"
+        echo "[INFO] ExecStopPost: Cleaning up dangling project containers: ${CONTAINERS}"
         docker stop -t 3 ${CONTAINERS} 2>/dev/null || true
         docker rm -f ${CONTAINERS} 2>/dev/null || true
     fi

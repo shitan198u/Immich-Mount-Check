@@ -3,7 +3,7 @@
 # Immich Safe Eject Utility (CLI + KDE Plasma GUI)
 # ==============================================================================
 # Gracefully shuts down the Immich stack, flushes all write caches to disk,
-# unmounts the filesystem, and notifies the user when the drive is safe to remove.
+# unmounts the filesystem, locks encrypted containers, and notifies the user.
 # ==============================================================================
 
 set -euo pipefail
@@ -77,7 +77,13 @@ EXTERNAL_MOUNT_PARENT="$(get_env_var EXTERNAL_MOUNT_PARENT "/mnt")"
 EXTERNAL_MOUNT_NAME="$(get_env_var EXTERNAL_MOUNT_NAME "my-external-drive")"
 MOUNT_PATH="${EXTERNAL_MOUNT_PARENT%/}/${EXTERNAL_MOUNT_NAME#/}"
 
-# 2. Confirmation Dialog (if in GUI mode)
+# 2. Verify Mount is Active (Fail fast if inactive)
+if ! mountpoint -q "${MOUNT_PATH}"; then
+    notify_error "Configured mount is not active: ${MOUNT_PATH}.\nNo drive was ejected."
+    exit 1
+fi
+
+# 3. Confirmation Dialog (if in GUI mode)
 if [[ "${USE_GUI}" == true ]]; then
     if ! kdialog --warningyesno "Are you sure you want to safely stop Immich and unmount the external drive at:\n\n${MOUNT_PATH}?" \
         --title "Confirm Immich Safe Eject" \
@@ -90,7 +96,7 @@ fi
 
 notify_info "Stopping Immich containers and syncing filesystem..."
 
-# 3. Stop Systemd Service or Docker Compose Stack
+# 4. Stop Systemd Service or Docker Compose Stack
 if systemctl is-active --quiet immich.service 2>/dev/null; then
     echo "[INFO] Stopping immich.service via systemctl..."
     if ! systemctl stop immich.service 2>/dev/null; then
@@ -100,67 +106,65 @@ else
     "${SCRIPT_DIR}/immich-stop.sh"
 fi
 
-# 4. Flush all dirty filesystem buffers
+# 5. Flush all dirty filesystem buffers
 echo "[INFO] Syncing data buffers..."
 sync
 
-# 5. Unmount the external filesystem and lock encrypted container
+# 6. Unmount the external filesystem and lock encrypted container
 LOCKED=false
 POWERED_OFF=false
 
+echo "[INFO] Detecting device topology for ${MOUNT_PATH}..."
+DEV_SOURCE=$(findmnt -n -o SOURCE "${MOUNT_PATH}" 2>/dev/null || true)
+
+echo "[INFO] Unmounting ${MOUNT_PATH}..."
+UNMOUNTED=false
+if command -v udisksctl >/dev/null 2>&1 && [[ -n "${DEV_SOURCE}" ]]; then
+    if udisksctl unmount -b "${DEV_SOURCE}" --no-user-interaction 2>/dev/null; then
+        UNMOUNTED=true
+    fi
+fi
+
+if [[ "${UNMOUNTED}" == false ]]; then
+    MOUNT_UNIT=$(systemd-escape -p "${MOUNT_PATH}").mount
+    if systemctl stop "${MOUNT_UNIT}" 2>/dev/null; then
+        UNMOUNTED=true
+    elif command -v pkexec >/dev/null 2>&1; then
+        pkexec umount "${MOUNT_PATH}" && UNMOUNTED=true || true
+    elif sudo -n true 2>/dev/null; then
+        sudo umount "${MOUNT_PATH}" && UNMOUNTED=true || true
+    fi
+fi
+
 if mountpoint -q "${MOUNT_PATH}"; then
-    echo "[INFO] Detecting device topology for ${MOUNT_PATH}..."
-    DEV_SOURCE=$(findmnt -n -o SOURCE "${MOUNT_PATH}" 2>/dev/null || true)
+    notify_error "Failed to unmount ${MOUNT_PATH}. The filesystem may still be in use by another application."
+    exit 1
+fi
 
-    echo "[INFO] Unmounting ${MOUNT_PATH}..."
-    UNMOUNTED=false
-    if command -v udisksctl >/dev/null 2>&1 && [[ -n "${DEV_SOURCE}" ]]; then
-        if udisksctl unmount -b "${DEV_SOURCE}" --no-user-interaction 2>/dev/null; then
-            UNMOUNTED=true
-        fi
-    fi
-
-    if [[ "${UNMOUNTED}" == false ]]; then
-        MOUNT_UNIT=$(systemd-escape -p "${MOUNT_PATH}").mount
-        if systemctl stop "${MOUNT_UNIT}" 2>/dev/null; then
-            UNMOUNTED=true
-        elif command -v pkexec >/dev/null 2>&1; then
-            pkexec umount "${MOUNT_PATH}" && UNMOUNTED=true || true
-        elif sudo -n true 2>/dev/null; then
-            sudo umount "${MOUNT_PATH}" && UNMOUNTED=true || true
-        fi
-    fi
-
-    if mountpoint -q "${MOUNT_PATH}"; then
-        notify_error "Failed to unmount ${MOUNT_PATH}. The filesystem may still be in use by another application."
-        exit 1
-    fi
-
-    # Lock LUKS container if encrypted mapper device
-    if [[ -n "${DEV_SOURCE}" ]]; then
-        if [[ "${DEV_SOURCE}" == /dev/mapper/* || "${DEV_SOURCE}" == /dev/dm-* ]]; then
-            echo "[INFO] Locking encrypted device ${DEV_SOURCE}..."
-            if command -v udisksctl >/dev/null 2>&1; then
-                if udisksctl lock -b "${DEV_SOURCE}" --no-user-interaction 2>/dev/null; then
-                    LOCKED=true
-                fi
+# Lock LUKS container if encrypted mapper device
+if [[ -n "${DEV_SOURCE}" ]]; then
+    if [[ "${DEV_SOURCE}" == /dev/mapper/* || "${DEV_SOURCE}" == /dev/dm-* ]]; then
+        echo "[INFO] Locking encrypted device ${DEV_SOURCE}..."
+        if command -v udisksctl >/dev/null 2>&1; then
+            if udisksctl lock -b "${DEV_SOURCE}" --no-user-interaction 2>/dev/null; then
+                LOCKED=true
             fi
         fi
+    fi
 
-        # Find top-level physical parent disk
-        TOP_NAME=$(lsblk -s -no NAME "${DEV_SOURCE}" 2>/dev/null | tail -n1 | tr -d '[:space:]|`-' || true)
-        if [[ -n "${TOP_NAME}" && -b "/dev/${TOP_NAME}" ]]; then
-            echo "[INFO] Powering off physical drive /dev/${TOP_NAME}..."
-            if command -v udisksctl >/dev/null 2>&1; then
-                if udisksctl power-off -b "/dev/${TOP_NAME}" --no-user-interaction 2>/dev/null; then
-                    POWERED_OFF=true
-                fi
+    # Find top-level physical parent disk
+    TOP_NAME=$(lsblk -s -no NAME "${DEV_SOURCE}" 2>/dev/null | tail -n1 | tr -d '[:space:]|`-' || true)
+    if [[ -n "${TOP_NAME}" && -b "/dev/${TOP_NAME}" ]]; then
+        echo "[INFO] Powering off physical drive /dev/${TOP_NAME}..."
+        if command -v udisksctl >/dev/null 2>&1; then
+            if udisksctl power-off -b "/dev/${TOP_NAME}" --no-user-interaction 2>/dev/null; then
+                POWERED_OFF=true
             fi
         fi
     fi
 fi
 
-# 6. Truthful success notification
+# 7. Truthful success notification
 if [[ "${LOCKED}" == true && "${POWERED_OFF}" == true ]]; then
     notify_success "✔ Immich stack stopped gracefully.\n✔ Filesystem buffers flushed.\n✔ Drive unmounted, locked, and powered off.\n\nIt is now safe to disconnect the drive."
 elif [[ "${LOCKED}" == true ]]; then
