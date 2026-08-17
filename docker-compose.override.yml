@@ -2,6 +2,7 @@ services:
   wait-for-mount:
     image: alpine:latest
     container_name: wait-for-mount
+    stop_grace_period: 1s
     # Checks if the subdirectory (e.g. BOREWELL-5TB) is a mountpoint.
     # If the drive isn't mounted, /host_mnt/BOREWELL-5TB is just a standard folder
     # (even if it contains lingering files), so 'mountpoint' returns false.
@@ -17,7 +18,7 @@ services:
         echo 'Still waiting for mount...' &&
         sleep 5;
       done &&
-      tail -f /dev/null
+      exec tail -f /dev/null
       "
     volumes:
       # Bind-mount ONLY the parent directory of your external drives (e.g. /media/shsrra)

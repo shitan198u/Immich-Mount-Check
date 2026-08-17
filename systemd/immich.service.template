@@ -13,6 +13,7 @@ WorkingDirectory=@WORKING_DIR@
 ExecStartPre=@SCRIPT_DIR@/immich-precheck.sh
 ExecStart=/usr/bin/docker compose up -d --remove-orphans
 ExecStop=@SCRIPT_DIR@/immich-stop.sh
+ExecStopPost=@SCRIPT_DIR@/immich-stop.sh
 TimeoutStartSec=180
 TimeoutStopSec=30
 User=@USER@
