@@ -1,0 +1,10 @@
+[Desktop Entry]
+Type=Service
+X-KDE-Solid-Predicate=[ StorageVolume.ignored == false AND [ StorageVolume.usage == 'FileSystem' OR StorageVolume.usage == 'Encrypted' ] ]
+Actions=immichEject;
+Name=Safely Eject Immich Drive
+
+[Desktop Action immichEject]
+Name=Safely Eject Immich Drive (Stop Stack & Eject)
+Icon=media-eject
+Exec=@SCRIPT_DIR@/immich-eject.sh --gui

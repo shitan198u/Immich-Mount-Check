@@ -1,1 +1,6 @@
 .env
+*.local
+*.generated
+*.log
+local/
+codebase_bundle.txt
