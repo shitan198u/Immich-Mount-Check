@@ -1,6 +1,6 @@
 [Desktop Entry]
 Type=Service
-X-KDE-Solid-Predicate=StorageVolume.usage == 'FileSystem' & StorageAccess.accessible == true
+X-KDE-Solid-Predicate=[ StorageVolume.ignored == false AND [ StorageVolume.usage == 'FileSystem' OR StorageVolume.usage == 'Encrypted' ] ]
 Actions=immichEject;
 Name=Safely Eject Immich Drive
 
