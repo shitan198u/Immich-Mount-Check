@@ -93,12 +93,18 @@ fi
 echo "[INFO] Syncing data buffers..."
 sync
 
-# 5. Unmount the external filesystem
+# 5. Unmount the external filesystem and lock encrypted container
 if mountpoint -q "${MOUNT_PATH}"; then
-    echo "[INFO] Unmounting ${MOUNT_PATH}..."
+    echo "[INFO] Detecting device topology for ${MOUNT_PATH}..."
     DEV_SOURCE=$(findmnt -n -o SOURCE "${MOUNT_PATH}" 2>/dev/null || true)
-    
-    # Try unmounting with udisksctl first (non-root desktop friendly), fallback to systemctl/umount
+    PARENT_PART=""
+    PARENT_DISK=""
+    if [[ -n "${DEV_SOURCE}" ]]; then
+        PARENT_PART=$(lsblk -s -no NAME "${DEV_SOURCE}" 2>/dev/null | sed 's/[^a-zA-Z0-9_]//g' | sed -n '2p' || true)
+        PARENT_DISK=$(lsblk -s -no NAME "${DEV_SOURCE}" 2>/dev/null | sed 's/[^a-zA-Z0-9_]//g' | sed -n '3p' || true)
+    fi
+
+    echo "[INFO] Unmounting ${MOUNT_PATH}..."
     UNMOUNTED=false
     if command -v udisksctl >/dev/null 2>&1 && [[ -n "${DEV_SOURCE}" ]]; then
         if udisksctl unmount -b "${DEV_SOURCE}" --no-user-interaction 2>/dev/null; then
@@ -121,8 +127,24 @@ if mountpoint -q "${MOUNT_PATH}"; then
         notify_error "Failed to unmount ${MOUNT_PATH}. The filesystem may still be in use by another application."
         exit 1
     fi
+
+    # Lock LUKS container if encrypted
+    if [[ -n "${PARENT_PART}" && -b "/dev/${PARENT_PART}" ]]; then
+        echo "[INFO] Locking encrypted device /dev/${PARENT_PART}..."
+        if command -v udisksctl >/dev/null 2>&1; then
+            udisksctl lock -b "/dev/${PARENT_PART}" --no-user-interaction 2>/dev/null || true
+        fi
+    fi
+
+    # Power off physical drive if requested / possible
+    if [[ -n "${PARENT_DISK}" && -b "/dev/${PARENT_DISK}" ]]; then
+        echo "[INFO] Powering off /dev/${PARENT_DISK}..."
+        if command -v udisksctl >/dev/null 2>&1; then
+            udisksctl power-off -b "/dev/${PARENT_DISK}" --no-user-interaction 2>/dev/null || true
+        fi
+    fi
 fi
 
 # 6. Success notification
-notify_success "✔ Immich was stopped gracefully.\n✔ Filesystem buffers flushed.\n✔ Drive (${MOUNT_PATH}) unmounted.\n\nIt is now safe to unplug the drive."
+notify_success "✔ Immich was stopped gracefully.\n✔ Filesystem buffers flushed.\n✔ Drive unmounted and locked.\n\nIt is now safe to unplug the drive."
 exit 0
