@@ -3,3 +3,4 @@
 *.generated
 *.log
 local/
+codebase_bundle.txt
