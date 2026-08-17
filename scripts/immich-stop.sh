@@ -34,21 +34,34 @@ else
     fi
 fi
 
-# Helper to dispatch native KDE desktop notifications
+# Helper to dispatch native desktop notifications via D-Bus
 send_desktop_notification() {
     local title="$1"
     local message="$2"
     local icon="${3:-media-playback-stop}"
-    local timeout="${4:-4}"
+    local timeout_ms="${4:-4000}"
 
     local target_uid="${UID:-1000}"
-    if [[ "${target_uid}" -eq 0 && -n "${SUDO_UID:-}" ]]; then
-        target_uid="${SUDO_UID}"
+    if [[ "${target_uid}" -eq 0 ]]; then
+        if [[ -n "${SUDO_UID:-}" ]]; then
+            target_uid="${SUDO_UID}"
+        else
+            target_uid=$(ls -d /run/user/[0-9]* 2>/dev/null | head -n1 | grep -o '[0-9]*' || echo 1000)
+        fi
     fi
 
     local user_bus="/run/user/${target_uid}/bus"
-    if [[ -S "${user_bus}" ]] && command -v kdialog >/dev/null 2>&1; then
-        DBUS_SESSION_BUS_ADDRESS="unix:path=${user_bus}" kdialog --passivepopup "${message}" "${timeout}" --title "${title}" --icon "${icon}" 2>/dev/null || true
+    if [[ -S "${user_bus}" ]]; then
+        if command -v gdbus >/dev/null 2>&1; then
+            gdbus call --address "unix:path=${user_bus}" \
+                --dest org.freedesktop.Notifications \
+                --object-path /org/freedesktop/Notifications \
+                --method org.freedesktop.Notifications.Notify \
+                "Immich" 0 "${icon}" "${title}" "${message}" [] {} "${timeout_ms}" >/dev/null 2>&1 || true
+        elif command -v kdialog >/dev/null 2>&1; then
+            XDG_RUNTIME_DIR="/run/user/${target_uid}" DBUS_SESSION_BUS_ADDRESS="unix:path=${user_bus}" \
+                kdialog --passivepopup "${message}" 4 --title "${title}" --icon "${icon}" >/dev/null 2>&1 || true
+        fi
     fi
 }
 
