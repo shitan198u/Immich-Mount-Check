@@ -1,68 +1,127 @@
-# Docker Compose Mount Check (for Immich)
+# Docker Compose Mount Check & Auto-Systemd (for Immich)
 
-A fail-safe Docker Compose utility to prevent containers from starting if an external hard drive (e.g., a media library disk) is not mounted on the host machine. 
+A fail-safe Docker Compose utility and systemd lifecycle manager to **automatically start Immich whenever an external drive is mounted**, perform deep pre-flight safety checks, protect against hot unplugs, and integrate natively with Linux desktop environments (like KDE Plasma).
 
 ![Mount Check Logs](mount_log.png)
 
-This tool is designed to work seamlessly with GitOps workflows, Docker managers (like Portainer or Arcane), or standard Docker Compose deployments. It uses a **Docker Compose override file** so you can safely auto-update your main Immich configuration without losing your mount-checking logic.
+---
+
+## 🌟 Key Features
+
+1. **Auto-Start on Mount (`systemd`)**: Binds the Docker Compose stack to your drive's systemd mount unit (`BindsTo=`). When you plug in or mount your drive, Immich starts automatically.
+2. **Deep Pre-Flight Safety Checks**:
+   * **Kernel Mount Validation**: Verifies the path is an active kernel mountpoint, not an empty directory on your host SSD root partition.
+   * **Read-Write Probe**: Tests write permissions to catch read-only mounts caused by ext4 journal errors or unclean shutdowns.
+   * **Disk Identity Marker**: Checks for `.mount_verified` on the drive root to prevent starting against the wrong disk.
+   * **Storage Sanity Check**: Ensures minimum free space before booting containers.
+   * **Docker Readiness**: Confirms Docker daemon is active and responsive.
+3. **Hot-Unplug & Unmount Protection**:
+   * If the drive is unmounted or unexpectedly disconnected, systemd immediately triggers a defensive stop, stopping containers and cleaning up dead handles without hanging the Docker daemon.
+   * On clean unmounts, containers are stopped *before* the filesystem is unmounted (inverting systemd shutdown order), preventing `EBUSY` (device busy) errors.
+4. **KDE Plasma & Desktop Integration**:
+   * **Interactive Safe Eject GUI**: Run `scripts/immich-eject.sh --gui` or search **"Safely Eject Immich Drive"** in KRunner (Alt+Space) or the Application Launcher for a native `kdialog` confirmation and status popups.
+   * **Dolphin File Manager Menu**: Right-click your mount directory in Dolphin to access **Immich Drive Actions** (Safe Eject, Restart Stack, Check Status).
+5. **100% Privacy & Generic Design**:
+   * Zero personal usernames, paths, or device identifiers are tracked in Git.
+   * Works for any mount point, any disk label, and can be swapped for any Docker Compose stack.
 
 ---
 
 ## 🚀 Quick Start
 
-### Step 1: Copy the Environment Template
-Create your local environment file by copying the template:
+### Step 1: Configure Your Local `.env`
+Copy the template and set your paths:
 ```bash
 cp .env.example .env
 ```
 
-### Step 2: Configure Your Paths in `.env`
-Open the `.env` file and set the paths according to where your drive is mounted:
-
+Edit `.env`:
 ```env
-# 1. How your drive mounts on the host (e.g., /media/username/my-external-drive)
+# 1. How your drive mounts on the host (e.g., /media/username/my-external-drive or /mnt/my-drive)
 EXTERNAL_MOUNT_PARENT=/media/username
 EXTERNAL_MOUNT_NAME=my-external-drive
 
 # 2. Where your Immich data lives
-UPLOAD_LOCATION=/media/username/my-drive/immich/upload    # External HDD
-DB_DATA_LOCATION=/home/username/immich/postgres           # OS SSD (Recommended)
-```
-
-*(If you are hosting everything on your primary OS SSD and don't need a mount check, simply leave the mount check variables blank).*
-
-### Step 3: Run the Stack
-Start your stack normally:
-```bash
-docker compose up -d
+UPLOAD_LOCATION=/media/username/my-external-drive/immich/uploads   # External HDD
+DB_DATA_LOCATION=/home/username/immich/db                          # Host OS SSD (Recommended)
 ```
 
 ---
 
-## 🛠️ Technical Details & Architecture
+### Step 2: Setup Automated Systemd & Desktop Integration
+Run the universal installer script:
+```bash
+./setup-autosystemd.sh
+```
 
-### The Problem It Solves
-When using standard Docker bind mounts, if a host path (like `/media/username/my-drive`) is missing because the drive is unplugged, Docker automatically creates an empty, root-owned folder at that path on your host SSD and starts the container anyway. 
+This will automatically:
+* Compute your systemd mount unit name via `systemd-escape`.
+* Create the `.mount_verified` marker file on your external drive.
+* Generate and install `/etc/systemd/system/immich.service`.
+* Enable `immich.service` to auto-start on mount.
+* Install the KDE Desktop launcher and Dolphin right-click context menu.
+* Run an immediate pre-flight safety check.
 
-This causes:
-*   Your container to write data to your OS partition instead of the external drive.
-*   Your primary storage drive to fill up and crash.
-*   Database splitting/corruption once the drive is reconnected.
+---
 
-### How this Mount Check works
-The validation process runs in two layers inside `docker-compose.override.yml`:
+## 🛠️ CLI & Desktop Utilities
 
-#### 1. The `wait-for-mount` Helper Container
-A lightweight Alpine container bind-mounts your drive's parent directory (e.g., `/media/username`) into the container using `propagation: rslave` (recursive slave). 
-* It runs `mountpoint -q /host_mnt/my-drive` in a loop.
-* Because it queries the Linux kernel's **mount table** rather than checking if the directory has files, it is immune to "lingering files" (empty database folders or leftovers) that might remain on your SSD from previous failed boots.
-* Once the drive is mounted on the host, the event propagates into the container, the health check passes, and the rest of the stack is allowed to boot.
+| Action | Command / Location | Description |
+|---|---|---|
+| **Safe Eject (GUI)** | KRunner / App Menu: *Safely Eject Immich Drive*<br>Or CLI: `./scripts/immich-eject.sh --gui` | Prompts with `kdialog`, stops Immich, flushes buffers (`sync`), unmounts disk, and notifies when safe to disconnect. |
+| **Safe Eject (CLI)** | `./scripts/immich-eject.sh` | Terminal version of the safe eject workflow. |
+| **Run Safety Pre-Check** | `./scripts/immich-precheck.sh` | Runs all 6 pre-flight safety checks and reports status. |
+| **Graceful Stop** | `./scripts/immich-stop.sh` | Safely stops containers and flushes disk buffers with defensive timeouts. |
+| **Uninstall Systemd** | `./setup-autosystemd.sh --uninstall` | Disables and removes the systemd service and desktop integrations. |
 
-#### 2. Strict Service Dependencies
-All other services (`database`, `redis`, `immich-machine-learning`, and `immich-server`) are configured to depend on the `wait-for-mount` service being `healthy`. They remain paused in a `created` state and do not run until the disk is verified.
+---
 
-#### 3. Fail-Fast Volume Overrides
-The volume mounts for the server and database are updated in the override file to set `create_host_path: false`. In the event of a system failure, Docker will crash immediately rather than auto-generating directories.
+## 🏗️ Architecture & Dual-Layer Protection
+
+```
+┌────────────────────────────────────────────────────────┐
+│                   USB Drive Plugged In                 │
+└──────────────────────────┬─────────────────────────────┘
+                           │
+                           ▼
+┌────────────────────────────────────────────────────────┐
+│      Systemd Mount Unit (e.g. mnt-storage.mount)       │
+└──────────────────────────┬─────────────────────────────┘
+                           │ (Triggers WantedBy)
+                           ▼
+┌────────────────────────────────────────────────────────┐
+│             systemd unit: immich.service               │
+│        (BindsTo & After = mnt-storage.mount)           │
+└──────────────────────────┬─────────────────────────────┘
+                           │
+                           ▼
+┌────────────────────────────────────────────────────────┐
+│ ExecStartPre: scripts/immich-precheck.sh               │
+│  ✔ Kernel mount table check (mountpoint -q)            │
+│  ✔ Read-Write probe (detects dirty / ro remounts)      │
+│  ✔ Marker file (.mount_verified)                       │
+│  ✔ DB directory & storage sanity checks                │
+└──────────────────────────┬─────────────────────────────┘
+                           │ (All checks pass)
+                           ▼
+┌────────────────────────────────────────────────────────┐
+│ ExecStart: docker compose up -d                        │
+│  ✔ wait-for-mount container verifies rslave mount      │
+│  ✔ Immich Server, ML, Postgres, Valkey start cleanly   │
+└────────────────────────────────────────────────────────┘
+
+┌────────────────────────────────────────────────────────┐
+│               HOT UNPLUG / UNMOUNT EVENT               │
+└──────────────────────────┬─────────────────────────────┘
+                           │ (Mount deactivates)
+                           ▼
+┌────────────────────────────────────────────────────────┐
+│ ExecStop: scripts/immich-stop.sh                       │
+│  ✔ Graceful docker compose down with timeout           │
+│  ✔ Defensive cleanup for unresponsive hanging I/O      │
+│  ✔ Stack stopped cleanly without hanging Docker daemon │
+└────────────────────────────────────────────────────────┘
+```
 
 ---
 

@@ -1,1 +1,5 @@
 .env
+*.local
+*.generated
+*.log
+local/

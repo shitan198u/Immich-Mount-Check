@@ -1,0 +1,22 @@
+[Desktop Entry]
+Type=Service
+X-KDE-ServiceTypes=KonqPopupMenu/Plugin
+MimeType=inode/directory;
+Actions=immichEject;immichRestart;immichStatus;
+X-KDE-Priority=TopLevel
+Name=Immich Drive Actions
+
+[Desktop Action immichEject]
+Name=Safely Eject Immich Drive
+Icon=media-eject
+Exec=@SCRIPT_DIR@/immich-eject.sh --gui
+
+[Desktop Action immichRestart]
+Name=Restart Immich Stack
+Icon=view-refresh
+Exec=bash -c "@SCRIPT_DIR@/immich-stop.sh && @SCRIPT_DIR@/immich-precheck.sh && cd @WORKING_DIR@ && docker compose up -d && kdialog --passivepopup 'Immich stack restarted' 5 --title 'Immich' --icon folder-pictures"
+
+[Desktop Action immichStatus]
+Name=Check Immich Status
+Icon=dialog-information
+Exec=bash -c "STATUS=\$(docker compose -f @WORKING_DIR@/docker-compose.yml ps --format 'table {{.Name}}\t{{.Status}}') && kdialog --msgbox \"Immich Container Status:\n\n\${STATUS}\" --title 'Immich Status' --icon dialog-information"

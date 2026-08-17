@@ -1,0 +1,11 @@
+[Desktop Entry]
+Version=1.0
+Type=Application
+Name=Safely Eject Immich Drive
+GenericName=Eject Storage Drive
+Comment=Safely stops Immich containers and unmounts the external photo library drive
+Exec=@SCRIPT_DIR@/immich-eject.sh --gui
+Icon=media-eject
+Terminal=false
+Categories=Utility;Qt;KDE;
+Keywords=immich;eject;unmount;drive;safe;
