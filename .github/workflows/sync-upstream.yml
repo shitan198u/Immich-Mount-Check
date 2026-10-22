@@ -14,7 +14,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout Repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
 
       - name: Fetch and Check Upstream Release
         run: |
@@ -25,22 +25,32 @@ jobs:
             exit 1
           fi
           echo "Latest upstream Immich release tag is $LATEST_TAG"
+          echo "LATEST_TAG=${LATEST_TAG}" >> $GITHUB_ENV
 
-          # 2. Download the docker-compose files associated with the latest tag
+          # 2. Download the docker-compose and hardware acceleration files
           curl --fail -sL "https://github.com/immich-app/immich/releases/download/$LATEST_TAG/docker-compose.yml" -o docker-compose.yml.new
           curl --fail -sL "https://github.com/immich-app/immich/releases/download/$LATEST_TAG/docker-compose.rootless.yml" -o docker-compose.rootless.yml.new
+          curl --fail -sL "https://github.com/immich-app/immich/releases/download/$LATEST_TAG/hwaccel.transcoding.yml" -o hwaccel.transcoding.yml.new || true
+          curl --fail -sL "https://github.com/immich-app/immich/releases/download/$LATEST_TAG/hwaccel.ml.yml" -o hwaccel.ml.yml.new || true
 
           # 3. Check if download succeeded and is valid yaml before replacing local files
           if grep -q "services" docker-compose.yml.new && grep -q "services" docker-compose.rootless.yml.new; then
-            if ! cmp -s docker-compose.yml docker-compose.yml.new || ! cmp -s docker-compose.rootless.yml docker-compose.rootless.yml.new; then
-              mv docker-compose.yml.new docker-compose.yml
-              mv docker-compose.rootless.yml.new docker-compose.rootless.yml
-              echo "UPDATED=true" >> $GITHUB_ENV
+            UPDATED=false
+            for f in docker-compose.yml docker-compose.rootless.yml hwaccel.transcoding.yml hwaccel.ml.yml; do
+              if [[ -f "${f}.new" ]]; then
+                if ! cmp -s "$f" "${f}.new" 2>/dev/null; then
+                  mv "${f}.new" "$f"
+                  UPDATED=true
+                else
+                  rm -f "${f}.new"
+                fi
+              fi
+            done
+            echo "UPDATED=${UPDATED}" >> $GITHUB_ENV
+            if [[ "${UPDATED}" == "true" ]]; then
               echo "New version detected and local files updated."
             else
-              echo "UPDATED=false" >> $GITHUB_ENV
               echo "Local files are already up-to-date with upstream release."
-              rm -f *.new
             fi
           else
             echo "UPDATED=false" >> $GITHUB_ENV
@@ -62,6 +72,6 @@ jobs:
         run: |
           git config --global user.name "github-actions[bot]"
           git config --global user.email "github-actions[bot]@users.noreply.github.com"
-          git add docker-compose.yml docker-compose.rootless.yml
-          git commit -m "Auto-update Immich compose files to upstream release"
+          git add docker-compose.yml docker-compose.rootless.yml hwaccel.transcoding.yml hwaccel.ml.yml
+          git commit -m "Auto-update Immich compose files to upstream release ${LATEST_TAG}"
           git push origin main
