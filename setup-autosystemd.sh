@@ -133,8 +133,11 @@ echo "Mount Path:        ${MOUNT_PATH}"
 echo "Systemd MountUnit: ${MOUNT_UNIT}"
 echo ""
 
-# Ensure scripts are executable
+# Ensure scripts are executable and labeled for systemd execution under SELinux (if active)
 chmod +x "${SCRIPT_DIR}"/*.sh
+if command -v selinuxenabled >/dev/null 2>&1 && selinuxenabled; then
+    chcon -t bin_t "${SCRIPT_DIR}"/*.sh 2>/dev/null || true
+fi
 
 # Step A: Marker File on External Drive
 if mountpoint -q "${MOUNT_PATH}"; then
@@ -153,11 +156,12 @@ fi
 # Step B: Generate Systemd Unit from Template
 echo "[INFO] Generating systemd unit for ${MOUNT_UNIT}..."
 TMP_SERVICE="$(mktemp)"
+MOUNT_UNIT_SED="${MOUNT_UNIT//\\/\\\\}"
 sed \
     -e "s|@WORKING_DIR@|${BASE_DIR}|g" \
     -e "s|@SCRIPT_DIR@|${SCRIPT_DIR}|g" \
     -e "s|@USER@|${ACTUAL_USER}|g" \
-    -e "s|@MOUNT_UNIT@|${MOUNT_UNIT}|g" \
+    -e "s|@MOUNT_UNIT@|${MOUNT_UNIT_SED}|g" \
     -e "s|@MOUNT_PATH@|${MOUNT_PATH}|g" \
     -e "s|@DOCKER_CMD@|${DOCKER_CMD}|g" \
     "${SYSTEMD_DIR}/immich.service.template" > "${TMP_SERVICE}"
