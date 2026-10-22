@@ -49,7 +49,10 @@ EXTERNAL_MOUNT_NAME=my-external-drive
 UPLOAD_LOCATION=/media/username/my-external-drive/immich/uploads   # External HDD
 DB_DATA_LOCATION=/home/username/immich/db                          # Host OS SSD (Recommended)
 
-# 3. (Optional) Advanced Safety
+# 3. Immich Version
+IMMICH_VERSION=v3                                                 # Tracks Immich v3 release branch (or pin to e.g. v3.3.5)
+
+# 4. (Optional) Advanced Safety
 # EXPECTED_FS_UUID=faedc8fe-b406-43e6-97fc-0dfaeba457cb          # Strict UUID check
 # NOTIFICATION_TIMEOUT_MS=-1                                      # -1 = KDE System Default
 ```
